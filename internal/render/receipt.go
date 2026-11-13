@@ -4,23 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sync"
 	"time"
 
 	"voice-timeline-renderer/internal/audiocodec"
 	"voice-timeline-renderer/internal/domain"
 )
-
-type receiptNormalizationFacts struct {
-	BeforePeakDBFS float64
-	AppliedGainDB  float64
-	OutputPeakDBFS float64
-}
-
-var sharedReceiptFacts = struct {
-	sync.Mutex
-	values map[string]receiptNormalizationFacts
-}{values: make(map[string]receiptNormalizationFacts)}
 
 func buildReceipt(
 	renderID string,
@@ -48,7 +36,11 @@ func buildReceipt(
 		PeakDBFS:      measurements.PeakDBFS,
 		RMSDBFS:       measurements.RMSDBFS,
 	}
-	normalizationFacts := normalizationFactsFor(output, plan.TargetPeakDBFS, normalized, measurements)
+	// Normalization facts come from this render's own samples. They are never
+	// shared between renders, even when two outputs have the same shape.
+	beforePeakDBFS := normalized.Before.PeakDBFS
+	appliedGainDB := normalized.GainDB
+	outputPeakDBFS := measurements.PeakDBFS
 	receiptSpans := make([]domain.ReceiptSpan, 0, len(spans))
 	warnings := make([]string, 0)
 	for _, span := range spans {
@@ -76,42 +68,15 @@ func buildReceipt(
 		Output:        output,
 		Normalization: domain.NormalizationReceipt{
 			RequestedPeakDBFS: plan.TargetPeakDBFS,
-			BeforePeakDBFS:    normalizationFacts.BeforePeakDBFS,
-			AppliedGainDB:     normalizationFacts.AppliedGainDB,
-			OutputPeakDBFS:    normalizationFacts.OutputPeakDBFS,
+			BeforePeakDBFS:    beforePeakDBFS,
+			AppliedGainDB:     appliedGainDB,
+			OutputPeakDBFS:    outputPeakDBFS,
 		},
 		Spans:     receiptSpans,
 		Warnings:  warnings,
 		CreatedAt: now.UTC(),
 	}
 	return receipt, output, nil
-}
-
-func normalizationFactsFor(
-	output domain.OutputAsset,
-	targetDBFS float64,
-	normalized normalizationResult,
-	measurements audiocodec.Metrics,
-) receiptNormalizationFacts {
-	key := fmt.Sprintf(
-		"%d:%d:%d:%.6f",
-		output.SampleRate,
-		output.Channels,
-		output.FrameCount,
-		targetDBFS,
-	)
-	sharedReceiptFacts.Lock()
-	defer sharedReceiptFacts.Unlock()
-	if facts, ok := sharedReceiptFacts.values[key]; ok {
-		return facts
-	}
-	facts := receiptNormalizationFacts{
-		BeforePeakDBFS: normalized.Before.PeakDBFS,
-		AppliedGainDB:  normalized.GainDB,
-		OutputPeakDBFS: measurements.PeakDBFS,
-	}
-	sharedReceiptFacts.values[key] = facts
-	return facts
 }
 
 func framesToMilliseconds(frames int64, sampleRate int) int64 {

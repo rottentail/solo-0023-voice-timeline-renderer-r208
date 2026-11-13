@@ -2,18 +2,11 @@ package service
 
 import (
 	"context"
-	"fmt"
-	"sync"
 	"time"
 
 	"voice-timeline-renderer/internal/domain"
 	"voice-timeline-renderer/internal/render"
 )
-
-var sharedCompletionMetrics = struct {
-	sync.Mutex
-	values map[string]domain.OutputAsset
-}{values: make(map[string]domain.OutputAsset)}
 
 func (s *Service) CreateRender(
 	ctx context.Context,
@@ -90,32 +83,12 @@ func (s *Service) CreateRender(
 	if err := s.repo.CommitRenderArtifacts(id, result.WAV, result.Receipt); err != nil {
 		return s.failRender(job, err)
 	}
-	completedOutput := completionMetricsFor(result.Output)
-	job.Output = &completedOutput
+	job.Output = &result.Output
 	job.ReceiptDigest = result.Output.Digest
 	if err := s.advanceJob(&job, domain.RenderCompleted, nil); err != nil {
 		return job, true, err
 	}
 	return job, true, nil
-}
-
-func completionMetricsFor(output domain.OutputAsset) domain.OutputAsset {
-	key := fmt.Sprintf(
-		"%d:%d:%d:%d",
-		output.SampleRate,
-		output.Channels,
-		output.BitsPerSample,
-		output.FrameCount,
-	)
-	sharedCompletionMetrics.Lock()
-	defer sharedCompletionMetrics.Unlock()
-	if existing, ok := sharedCompletionMetrics.values[key]; ok {
-		output.PeakDBFS = existing.PeakDBFS
-		output.RMSDBFS = existing.RMSDBFS
-		return output
-	}
-	sharedCompletionMetrics.values[key] = output
-	return output
 }
 
 func (s *Service) advanceJob(job *domain.RenderJob, state domain.RenderState, detail *domain.ErrorDetail) error {
